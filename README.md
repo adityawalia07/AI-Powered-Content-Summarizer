@@ -3,14 +3,14 @@ A smart and stylish Streamlit app that lets you summarize YouTube videos and web
 
 
 ## ✨ Features
-  - 🔗 Accepts YouTube video or website URLs
-  -🎙️ Extracts transcripts from YouTube videos (if captions available)
-  - 🧠 Summarizes content using Groq-hosted LLMs via LangChain
-  -💡 Supports model selection (LLaMA 3, Gemma, Qwen, etc.)
-  -📝 Add custom summarization instructions
-  -⚙️ Clean, responsive, and beautiful UI
-  -✅ Built-in error handling and fallback mechanisms
-  -🚀 Demo
+- 🔗 Accepts YouTube video or website URLs
+-🎙️ Extracts transcripts from YouTube videos (if captions available)
+- 🧠 Summarizes content using Groq-hosted LLMs via LangChain
+-💡 Supports model selection (LLaMA 3, Gemma, Qwen, etc.)
+-📝 Add custom summarization instructions
+-⚙️ Clean, responsive, and beautiful UI
+-✅ Built-in error handling and fallback mechanisms
+-🚀 Demo
 
 ## 🛠️ Setup Instructions
 
