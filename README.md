@@ -21,7 +21,7 @@ Add your Groq API Key inside:
 ### Running the Application
 
 ```bash
-streamlit run app.py
+streamlit run Final.py
 ```
 
 ## 🧠 Supported LLMs
@@ -35,9 +35,7 @@ You can easily extend the list in the code if Groq adds more models.
 
 ## ⚠️ Limitations
 - YouTube transcript extraction relies on publicly available captions.
-
 - Website scraping may not work for JavaScript-heavy sites.
-
 - Summarization length capped around 10,000 characters.
 
 ## 🧩 Technologies Used
@@ -50,5 +48,11 @@ You can easily extend the list in the code if Groq adds more models.
 - Python Dotenv
 
 ## 🙌 Credits
-Made with ❤️ by Aditya
+Made with ❤️ by Aditya <br>
 Powered by Groq + LangChain + Open Source Libraries
+
+# Output
+
+https://github.com/user-attachments/assets/7d8c46ca-2965-4eff-bb5f-f9e471000f82
+
+
