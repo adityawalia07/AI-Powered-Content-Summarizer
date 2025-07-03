@@ -20,10 +20,10 @@ st.set_page_config(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Comprehensive import handling
+# Import handling
 try:
     from youtube_transcript_api import YouTubeTranscriptApi
-    from pytube import YouTube, exceptions as pytube_exceptions
+    from youtube_transcript_api.formatters import TextFormatter
     from langchain_groq import ChatGroq
     from langchain.prompts import PromptTemplate
     from langchain.docstore.document import Document
@@ -33,7 +33,8 @@ except ImportError as e:
     st.error(f"Import Error: {e}")
     st.error("Please install required libraries:")
     st.code("""
-    pip install youtube-transcript-api pytube langchain-groq requests beautifulsoup4 python-readability python-dotenv
+    pip install youtube-transcript-api langchain-groq 
+            requests beautifulsoup4 python-dotenv
     """)
     st.stop()
 
@@ -42,215 +43,312 @@ def extract_youtube_video_id(url: str) -> str:
     Extract YouTube video ID from various URL formats
     """
     patterns = [
-        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([^&]+)',
-        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([^?&]+)',
-        r'(?:https?:\/\/)?(?:www\.)?youtu\.be\/([^?&]+)'
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})',
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]{11})',
+        r'(?:https?:\/\/)?(?:www\.)?youtu\.be\/([a-zA-Z0-9_-]{11})',
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/v\/([a-zA-Z0-9_-]{11})',
+        r'(?:https?:\/\/)?(?:www\.)?m\.youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})'
     ]
     
     for pattern in patterns:
         match = re.search(pattern, url)
         if match:
-            return match.group(1)
+            video_id = match.group(1)
+            if len(video_id) == 11:
+                return video_id
     
     return ""
 
 def fetch_video_metadata(video_id: str):
     """
-    Alternative method to fetch video metadata using YouTube's public data
+    Fetch video metadata using YouTube's oEmbed API
     """
     try:
-        # Try pytube first
-        try:
-            yt = YouTube(f"https://youtube.com/watch?v={video_id}")
-            return {
-                "title": yt.title,
-                "author": yt.author,
-                "length": yt.length,
-                "thumbnail": yt.thumbnail_url
-            }
-        except Exception as pytube_error:
-            logger.warning(f"Pytube failed: {pytube_error}")
-
-        # Fallback to requests method
-        try:
-            url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
-            response = requests.get(url)
-            if response.status_code == 200:
-                data = response.json()
-                return {
-                    "title": data.get('title', 'Untitled Video'),
-                    "author": data.get('author_name', 'Unknown Channel'),
-                    "length": 0,
-                    "thumbnail": data.get('thumbnail_url')
-                }
-        except Exception as requests_error:
-            logger.warning(f"Requests method failed: {requests_error}")
-
-        # Ultimate fallback
-        return {
-            "title": "Video Title Unavailable",
-            "author": "Channel Unavailable",
-            "length": 0,
-            "thumbnail": None
-        }
-
-    except Exception as e:
-        logger.error(f"Metadata retrieval error: {e}")
-        return {
-            "title": "Video Title Unavailable",
-            "author": "Channel Unavailable",
-            "length": 0,
-            "thumbnail": None
-        }
-
-def extract_youtube_transcript(video_id: str) -> str:
-    """
-    Extract transcript from a YouTube video with detailed error handling
-    """
-    try:
-        # Fetch transcript
-        transcript = YouTubeTranscriptApi.get_transcript(video_id)
+        url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
         
-        # Combine transcript texts
-        full_transcript = ' '.join([entry['text'] for entry in transcript])
-        
-        # Truncate to first 10000 characters
-        return full_transcript[:10000]
-    
-    except Exception as transcript_error:
-        st.error(f"Transcript Extraction Error: {transcript_error}")
-        st.info("Possible reasons:")
-        st.info("- No closed captions available")
-        st.info("- Video might be age-restricted")
-        st.info("- Transcript might be disabled")
-        return ""
-
-def extract_website_content(url: str) -> str:
-    """
-    Extract main content from a website using multiple methods
-    """
-    try:
-        # Add headers to mimic browser request
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
         
-        # Fetch webpage
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         
-        # Use BeautifulSoup for initial parsing
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "title": data.get('title', 'Untitled Video'),
+                "author": data.get('author_name', 'Unknown Channel'),
+                "status": "success"
+            }
+        else:
+            raise requests.RequestException(f"HTTP {response.status_code}")
+
+    except Exception as e:
+        logger.warning(f"oEmbed API failed: {e}")
+        return {
+            "title": "Video Title Unavailable",
+            "author": "Channel Unavailable", 
+            "status": "failed",
+            "error": str(e)
+        }
+
+def extract_youtube_transcript(video_id: str) -> tuple:
+    """
+    Extract transcript from a YouTube video
+    Returns tuple: (transcript_text, success_status, error_message)
+    """
+    try:
+        if not video_id or len(video_id) != 11:
+            return "", False, "Invalid video ID format"
+        
+        try:
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            
+            transcript = None
+            
+            # Try to find a manual English transcript first
+            try:
+                transcript = transcript_list.find_manually_created_transcript(['en'])
+            except:
+                try:
+                    transcript = transcript_list.find_generated_transcript(['en'])
+                except:
+                    try:
+                        transcript = next(iter(transcript_list))
+                    except:
+                        return "", False, "No transcripts available for this video"
+            
+            transcript_data = transcript.fetch()
+            
+            formatter = TextFormatter()
+            formatted_transcript = formatter.format_transcript(transcript_data)
+            
+            cleaned_transcript = ' '.join(formatted_transcript.split())
+            
+            # Increased character limit for better content retention
+            # Most Groq models can handle 8k tokens, which is roughly 32k characters
+            if len(cleaned_transcript) > 30000:
+                cleaned_transcript = cleaned_transcript[:30000] + "..."
+                logger.info(f"Transcript truncated to 30000 characters")
+            
+            return cleaned_transcript, True, "Transcript extracted successfully"
+        
+        except Exception as transcript_error:
+            error_msg = str(transcript_error)
+            
+            if "Could not retrieve a transcript" in error_msg:
+                return "", False, "No transcript available - video may not have captions enabled"
+            elif "Too Many Requests" in error_msg:
+                return "", False, "Rate limit exceeded - please try again later"
+            elif "Video unavailable" in error_msg:
+                return "", False, "Video is unavailable or private"
+            elif "Transcript disabled" in error_msg:
+                return "", False, "Transcripts are disabled for this video"
+            else:
+                return "", False, f"Transcript extraction failed: {error_msg}"
+    
+    except Exception as e:
+        logger.error(f"Unexpected error in transcript extraction: {e}")
+        return "", False, f"Unexpected error: {str(e)}"
+
+def extract_website_content(url: str) -> tuple:
+    """
+    Extract main content from a website
+    Returns tuple: (content_text, success_status, error_message)
+    """
+    try:
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        }
+        
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        
+        content_type = response.headers.get('content-type', '').lower()
+        if 'text/html' not in content_type:
+            return "", False, f"Unsupported content type: {content_type}"
+        
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Remove script and style elements
-        for script in soup(["script", "style"]):
-            script.decompose()
+        # Remove unwanted elements
+        for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside', 'noscript']):
+            element.decompose()
         
-        # Extract text from body
-        body_text = soup.get_text(separator=' ', strip=True)
+        # Try to find main content areas
+        main_content = ""
+        content_selectors = [
+            'main', 'article', '[role="main"]', '.content', '#content', 
+            '.post-content', '.entry-content', '.article-content'
+        ]
         
-        # Clean up and truncate text
-        cleaned_text = ' '.join(body_text.split())
+        for selector in content_selectors:
+            content_elements = soup.select(selector)
+            if content_elements:
+                main_content = ' '.join([elem.get_text(separator=' ', strip=True) for elem in content_elements])
+                break
         
-        # Limit to 10000 characters
-        return cleaned_text[:10000]
+        # If no main content found, extract from body
+        if not main_content:
+            body = soup.find('body')
+            if body:
+                main_content = body.get_text(separator=' ', strip=True)
+            else:
+                main_content = soup.get_text(separator=' ', strip=True)
+        
+        cleaned_text = ' '.join(main_content.split())
+        
+        if len(cleaned_text) < 100:
+            return "", False, "Insufficient content extracted from website"
+        
+        # Increased character limit for better content retention
+        if len(cleaned_text) > 30000:
+            cleaned_text = cleaned_text[:30000] + "..."
+            logger.info(f"Website content truncated to 30000 characters")
+        
+        return cleaned_text, True, "Website content extracted successfully"
     
-    except requests.RequestException as e:
-        st.error(f"Website Extraction Error: {e}")
-        st.info("Possible reasons:")
-        st.info("- Invalid URL")
-        st.info("- Website is not accessible")
-        st.info("- Network connectivity issues")
-        return ""
+    except requests.exceptions.Timeout:
+        return "", False, "Request timeout - website took too long to respond"
+    except requests.exceptions.ConnectionError:
+        return "", False, "Connection error - unable to reach website"
+    except requests.exceptions.HTTPError as e:
+        return "", False, f"HTTP error {e.response.status_code}: {e.response.reason}"
+    except requests.exceptions.RequestException as e:
+        return "", False, f"Request error: {str(e)}"
     except Exception as e:
-        st.error(f"Unexpected error extracting website content: {e}")
-        return ""
+        logger.error(f"Unexpected error extracting website content: {e}")
+        return "", False, f"Unexpected error: {str(e)}"
+
+def get_model_limits(model: str) -> dict:
+    """
+    Get model-specific limits for optimal performance
+    """
+    model_configs = {
+        "llama3-8b-8192": {
+            "max_tokens": 8192,
+            "max_input_chars": 32000,
+            "recommended_summary_tokens": 1500
+        },
+        "gemma2-9b-it": {
+            "max_tokens": 8192,
+            "max_input_chars": 32000,
+            "recommended_summary_tokens": 1500
+        },
+        "qwen-qwq-32b": {
+            "max_tokens": 32768,
+            "max_input_chars": 120000,
+            "recommended_summary_tokens": 2000
+        }
+    }
+    
+    return model_configs.get(model, model_configs["llama3-8b-8192"])
 
 def langchain_summarize(
     text: str, 
     model: str = "llama3-8b-8192",
     additional_instructions: str = ""
-) -> str:
+) -> tuple:
     """
-    Use LangChain to generate a summary with comprehensive error handling
+    Use LangChain to generate a summary with model-specific optimizations
+    Returns tuple: (summary_text, success_status, error_message)
     """
     try:
-        # Validate inputs
-        if not text:
-            st.error("No text provided for summarization")
-            return ""
+        if not text or len(text.strip()) < 50:
+            return "", False, "Text too short for meaningful summarization"
 
-        # Get API key from environment variable
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
-            st.error("No GROQ API key found in environment variables")
-            return ""
+            return "", False, "GROQ API key not found in environment variables"
 
-        # Initialize LLM
-        llm = ChatGroq(
-            model=model, 
-            temperature=0.3, 
-            groq_api_key=api_key
-        )
+        # Get model-specific configuration
+        model_config = get_model_limits(model)
+        
+        # Truncate input if it exceeds model limits
+        if len(text) > model_config["max_input_chars"]:
+            text = text[:model_config["max_input_chars"]] + "..."
+            logger.info(f"Input truncated to {model_config['max_input_chars']} characters for {model}")
 
-        # Create a document
+        try:
+            llm = ChatGroq(
+                model=model, 
+                temperature=0.3, 
+                groq_api_key=api_key,
+                max_tokens=model_config["recommended_summary_tokens"],
+                timeout=90  # Increased timeout for longer content
+            )
+        except Exception as llm_error:
+            return "", False, f"Failed to initialize LLM: {str(llm_error)}"
+
         docs = [Document(page_content=text)]
 
-        # Prompt template with optional additional instructions
-        prompt_template = f"""
-        Provide a comprehensive summary of the following content:
-        - Capture the main ideas, key points, and most important information
-        - Organize the summary in a clear, logical manner
-        - Aim for a concise summary that captures the essence of the content
-        - Length should be around 300-400 words
-        {additional_instructions}
+        base_prompt = """
+        Provide a comprehensive and well-structured summary of the following content:
 
-        Content: {{text}}
-
-        DETAILED SUMMARY:
+        **Instructions:**
+        - Identify and highlight the main themes and key points
+        - Organize information in a logical, easy-to-follow structure
+        - Include important details, statistics, or examples when relevant
+        - Maintain the original tone and context
+        - Aim for a detailed summary that captures the essence of the content
+        - Use clear, concise language
+        - Structure the summary with appropriate headings or sections if the content is complex
         """
+        
+        if additional_instructions:
+            base_prompt += f"\n\n**Additional Requirements:**\n{additional_instructions}"
+        
+        base_prompt += "\n\n**Content to Summarize:**\n{text}\n\n**SUMMARY:**"
+
         prompt = PromptTemplate(
-            template=prompt_template, 
+            template=base_prompt, 
             input_variables=["text"]
         )
 
-        # Summarization chain
-        chain = load_summarize_chain(
-            llm, 
-            chain_type="stuff", 
-            prompt=prompt
-        )
+        try:
+            chain = load_summarize_chain(
+                llm, 
+                chain_type="stuff", 
+                prompt=prompt,
+                verbose=False
+            )
+        except Exception as chain_error:
+            return "", False, f"Failed to create summarization chain: {str(chain_error)}"
 
-        # Generate summary
-        output_summary = chain.invoke({"input_documents": docs})
-        summary_text = output_summary.get('output_text', '') if isinstance(output_summary, dict) else str(output_summary)
-
-        return summary_text
+        try:
+            result = chain.invoke({"input_documents": docs})
+            
+            if isinstance(result, dict):
+                summary_text = result.get('output_text', '')
+            else:
+                summary_text = str(result)
+            
+            if not summary_text or len(summary_text.strip()) < 20:
+                return "", False, "Generated summary is too short or empty"
+            
+            return summary_text.strip(), True, "Summary generated successfully"
+            
+        except Exception as generation_error:
+            error_msg = str(generation_error)
+            if "rate limit" in error_msg.lower():
+                return "", False, "API rate limit exceeded - please try again later"
+            elif "authentication" in error_msg.lower():
+                return "", False, "API authentication failed - check your API key"
+            elif "timeout" in error_msg.lower():
+                return "", False, "Request timeout - please try again"
+            else:
+                return "", False, f"Summary generation failed: {error_msg}"
 
     except Exception as e:
-        st.error(f"Summarization Error: {e}")
-        logger.error(traceback.format_exc())
-        return ""
+        logger.error(f"Unexpected summarization error: {e}")
+        return "", False, f"Unexpected error during summarization: {str(e)}"
 
 def main():
     # Custom CSS for enhanced UI
     st.markdown("""
     <style>
-    .stTextInput > div > div > input {
-        color: white !important;
-        background-color: rgba(255, 255, 255, 0.1) !important;
-        border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    }
-    .stSelectbox > div > div > select {
-        color: white !important;
-        background-color: rgba(255, 255, 255, 0.1) !important;
-        border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    }
-    .stRadio > div {
-        background-color: rgba(255, 255, 255, 0.1) !important;
-        border-radius: 10px;
-        padding: 10px;
-    }
     .stButton > button {
         background-color: #4CAF50 !important;
         color: white !important;
@@ -263,14 +361,24 @@ def main():
         background-color: #45a049 !important;
         transform: scale(1.05) !important;
     }
-    .stAlert {
-        border-radius: 10px !important;
+    .error-card {
+        background-color: rgba(255, 0, 0, 0.1);
+        border-left: 5px solid #ff4444;
+        padding: 15px;
+        border-radius: 5px;
+        margin: 10px 0;
+    }
+    .success-card {
+        background-color: rgba(0, 255, 0, 0.1);
+        border-left: 5px solid #4CAF50;
+        padding: 15px;
+        border-radius: 5px;
+        margin: 10px 0;
     }
     </style>
     """, unsafe_allow_html=True)
 
-    
-    # Title with gradient
+    # Title
     st.markdown("""
     <h1 style="
         background: linear-gradient(90deg, #00DBDE 0%, #FC00FF 100%);
@@ -281,7 +389,7 @@ def main():
     ">🤖 AI-Powered Content Summarizer</h1>
     """, unsafe_allow_html=True)
     
-    # Content URL Input with icon
+    # Content URL Input
     content_url = st.text_input(
         "📎 Enter YouTube Video or Website URL", 
         placeholder="https://www.youtube.com/watch?v=... or https://example.com"
@@ -299,9 +407,8 @@ def main():
     if not api_key:
         st.error("⚠️ No GROQ API Key found in .env file. Please make sure to set the GROQ_API_KEY environment variable.")
     
-    # Advanced Options Expander
+    # Advanced Options
     with st.expander("🚀 Advanced Summarization Options"):
-        # Model selection dropdown
         available_models = [
             "llama3-8b-8192", 
             "gemma2-9b-it", 
@@ -313,16 +420,19 @@ def main():
             index=0
         )
         
+        # Display model capabilities
+        model_info = get_model_limits(selected_model)
+        st.info(f"📊 Model: {selected_model} | Max Input: ~{model_info['max_input_chars']:,} chars | Max Output: {model_info['recommended_summary_tokens']} tokens")
+        
         additional_context = st.text_area(
             "Additional Context or Specific Instructions", 
-            placeholder="Example: Focus on technical details or summarize for a specific audience..."
+            placeholder="Example: Focus on technical details, summarize for a specific audience, highlight key statistics..."
         )
     
     # Summarize Button
     if st.button("Generate Summary", use_container_width=True):
-        # Validate inputs
         if not api_key:
-            st.warning("📢 Please set your Groq API Key in the .env file")
+            st.error("📢 Please set your Groq API Key in the .env file")
             return
         
         if not content_url:
@@ -332,98 +442,91 @@ def main():
         # Show loading spinner
         with st.spinner("🔍 Extracting content and generating summary..."):
             try:
-                # Extract content based on type
+                extracted_content = ""
+                extraction_success = False
+                extraction_error = ""
+                
                 if content_type == "YouTube Video":
-                    # Extract video ID
                     video_id = extract_youtube_video_id(content_url)
                     if not video_id:
-                        st.error("❌ Invalid YouTube URL")
+                        st.error("❌ Invalid YouTube URL format")
                         return
 
-                    # Extract transcript from YouTube video
-                    extracted_content = extract_youtube_transcript(video_id)
-                    
-                    # Retrieve video details safely
+                    extracted_content, extraction_success, extraction_error = extract_youtube_transcript(video_id)
                     video_details = fetch_video_metadata(video_id)
                     
-                    # Display metadata if available
-                    if extracted_content:
-                        # Display video details as a card
-                        st.markdown(f"""
-                        <div style="
-                            background-color: rgba(255, 255, 255, 0.1);
-                            border-radius: 10px;
-                            padding: 15px;
-                            margin-bottom: 15px;
-                        ">
-                        <h3 style="color: #4CAF50;">📺 {video_details['title']}</h3>
-                        <p>📢 Channel: {video_details['author']}</p>
-                        {'<p>⏱️ Length: ' + str(video_details['length']) + ' seconds</p>' if video_details['length'] > 0 else ''}
-                        </div>
-                        """, unsafe_allow_html=True)
-                
-                else:  # Website
-                    # Extract website content
-                    extracted_content = extract_website_content(content_url)
-                    
-                    # Display URL as a card
+                    # Display video metadata
                     st.markdown(f"""
-                    <div style="
-                        background-color: rgba(255, 255, 255, 0.1);
-                        border-radius: 10px;
-                        padding: 15px;
-                        margin-bottom: 15px;
-                    ">
-                    <h3 style="color: #4CAF50;">🌐 Website Content</h3>
-                    <p>📎 URL: {content_url}</p>
+                    <div class="{'success-card' if video_details['status'] == 'success' else 'error-card'}">
+                    <h3>📺 {video_details['title']}</h3>
+                    <p>📢 Channel: {video_details['author']}</p>
                     </div>
                     """, unsafe_allow_html=True)
+                    
+                    if extraction_success:
+                        st.success(f"✅ {extraction_error}")
+                        st.info(f"📝 Transcript length: {len(extracted_content):,} characters")
+                    else:
+                        st.error(f"❌ Transcript extraction failed: {extraction_error}")
+                        return
                 
-                # Check if content was extracted
-                if not extracted_content:
-                    st.error("❌ Could not extract content")
-                    return
+                else:  # Website
+                    extracted_content, extraction_success, extraction_error = extract_website_content(content_url)
+                    
+                    st.markdown(f"""
+                    <div class="{'success-card' if extraction_success else 'error-card'}">
+                    <h3>🌐 Website Content</h3>
+                    <p>📎 URL: {content_url}</p>
+                    <p>Status: {'✅ Content extracted successfully' if extraction_success else '❌ ' + extraction_error}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    if extraction_success:
+                        st.info(f"📝 Content length: {len(extracted_content):,} characters")
+                    else:
+                        return
                 
                 # Generate AI summary
-                summary = langchain_summarize(
+                summary, summary_success, summary_error = langchain_summarize(
                     text=extracted_content, 
                     model=selected_model,
                     additional_instructions=additional_context
                 )
                 
-                # Display summary in a styled card
-                if summary:
+                if summary_success:
                     st.markdown("""
                     <div style="
                         background-color: rgba(255, 255, 255, 0.1);
                         border-radius: 10px;
                         padding: 20px;
                         border-left: 5px solid #4CAF50;
+                        margin-top: 20px;
                     ">
                     <h3 style="color: #4CAF50;">✨ AI-Generated Summary</h3>
                     """, unsafe_allow_html=True)
                     st.write(summary)
                     st.markdown("</div>", unsafe_allow_html=True)
+                    
+                    st.info(f"📊 Summary length: {len(summary):,} characters | Model used: {selected_model}")
                 else:
-                    st.error("❌ Failed to generate summary")
+                    st.error(f"❌ Summary generation failed: {summary_error}")
             
             except Exception as e:
                 st.error(f"❌ An unexpected error occurred: {e}")
                 logger.error(traceback.format_exc())
+                with st.expander("🔍 Error Details (for debugging)"):
+                    st.code(traceback.format_exc())
 
     # Footer
     st.markdown("""
     <div style="
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        width: 100%;
-        background-color: rgba(0, 0, 0, 0.7);
-        color: white;
+        margin-top: 50px;
         text-align: center;
-        padding: 10px;
+        padding: 20px;
+        color: rgba(255, 255, 255, 0.7);
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
     ">
-    Made with ❤️ by an AI Assistant | Powered by Groq & LangChain
+    Made with ❤️ using Streamlit | Powered by Groq & LangChain
     </div>
     """, unsafe_allow_html=True)
 
